@@ -1,6 +1,8 @@
 package testing_elasticsearch;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
+import co.elastic.clients.elasticsearch._helpers.bulk.BulkIngester;
+import co.elastic.clients.elasticsearch.core.bulk.BulkOperation;
 import co.elastic.clients.json.jackson.JacksonJsonpMapper;
 import co.elastic.clients.transport.rest_client.RestClientTransport;
 import com.fasterxml.jackson.core.JsonParseException;
@@ -55,11 +57,6 @@ public class BookSearcherIntTest {
             transport.close();
         }
     }
-
-
-    // Please keep in mind that this way of initialising data for Elasticsearch performs terribly.
-    // Please don't do anything like this for your tests.
-    // This is merely a starting point for optimisation in subsequent steps.
 
     @BeforeEach
     void setupDataInContainer() throws IOException, InterruptedException {
@@ -119,17 +116,26 @@ public class BookSearcherIntTest {
                 .with(schema)
                 .readValues(new InputStreamReader(csvContentStream));
 
-            boolean hasNext = false;
+            try (BulkIngester<?> ingester = BulkIngester.of(bi -> bi
+                .client(client)
+                .maxConcurrentRequests(20)
+                .maxOperations(5000))) {
 
-            do {
-                try {
-                    Book book = it.nextValue();
-                    client.index(i -> i.index("books").document(book));
-                    hasNext = it.hasNextValue();
-                } catch (JsonParseException | InvalidFormatException e) {
-                    // ignore malformed data
+                boolean hasNext = true;
+
+                while (hasNext) {
+                    try {
+                        Book book = it.nextValue();
+                        ingester.add(BulkOperation.of(b -> b
+                            .index(i -> i
+                                .index("books")
+                                .document(book))));
+                        hasNext = it.hasNextValue();
+                    } catch (JsonParseException | InvalidFormatException e) {
+                        // ignore malformed data
+                    }
                 }
-            } while (hasNext);
+            }
         }
         // please don't go with Thread.sleep(1_000) "for the data to appear"; instead: refresh
         // more: https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-refresh.html
