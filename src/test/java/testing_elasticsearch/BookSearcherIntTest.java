@@ -22,6 +22,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.LocalTime;
+import java.util.Map;
 
 public class BookSearcherIntTest {
 
@@ -37,8 +38,8 @@ public class BookSearcherIntTest {
     static ElasticsearchContainer elasticsearch =
         new ElasticsearchContainer(ELASTICSEARCH_IMAGE)
             .withCopyToContainer(MountableFile.forHostPath("src/test/resources/books.ndjson"), "/tmp/books.ndjson")
-            .withEnv("path.repo", REPO_LOCATION);
-
+            .withEnv("path.repo", REPO_LOCATION)
+            .withTmpFs(Map.of("/usr/share/elasticsearch/data", "rw"));
 
     @BeforeAll
     static void setupDataIfMissing() throws IOException, InterruptedException {
