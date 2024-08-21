@@ -1,31 +1,25 @@
 package testing_elasticsearch;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
-import co.elastic.clients.elasticsearch._helpers.bulk.BulkIngester;
-import co.elastic.clients.elasticsearch.core.bulk.BulkOperation;
 import co.elastic.clients.json.jackson.JacksonJsonpMapper;
 import co.elastic.clients.transport.rest_client.RestClientTransport;
-import com.fasterxml.jackson.core.JsonParseException;
-import com.fasterxml.jackson.databind.MappingIterator;
-import com.fasterxml.jackson.databind.exc.InvalidFormatException;
-import com.fasterxml.jackson.dataformat.csv.CsvMapper;
-import com.fasterxml.jackson.dataformat.csv.CsvSchema;
 import org.apache.http.HttpHost;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import static org.testcontainers.containers.Container.ExecResult;
 import org.testcontainers.elasticsearch.ElasticsearchContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.utility.MountableFile;
 
+import java.io.FileWriter;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
+import java.io.Writer;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.LocalTime;
 
@@ -34,12 +28,39 @@ public class BookSearcherIntTest {
 
     static final String ELASTICSEARCH_IMAGE = "docker.elastic.co/elasticsearch/elasticsearch:8.15.0";
     static final JacksonJsonpMapper JSONP_MAPPER = new JacksonJsonpMapper();
+    static final Path DATA_PATH = Path.of("src/test/resources/books.ndjson");
 
     RestClientTransport transport;
     ElasticsearchClient client;
 
     @Container
-    ElasticsearchContainer elasticsearch = new ElasticsearchContainer(ELASTICSEARCH_IMAGE);
+    ElasticsearchContainer elasticsearch =
+        new ElasticsearchContainer(ELASTICSEARCH_IMAGE)
+            .withCopyToContainer(MountableFile.forHostPath("src/test/resources/books.ndjson"), "/tmp/books.ndjson");
+
+    @BeforeAll
+    static void setupDataIfMissing() throws IOException, InterruptedException {
+
+        if (Files.exists(DATA_PATH)) {
+            return;
+        }
+        try (Writer output = new FileWriter(DATA_PATH.toFile())) {
+            // this record class will help up with deserialization of the CSV data we use to initialize Elasticsearch
+            @com.fasterxml.jackson.annotation.JsonPropertyOrder({"title", "description", "author", "year", "publisher", "ratings"})
+            record Book(
+                String title,
+                String description,
+                String author,
+                int year,
+                String publisher,
+                float ratings
+            ) {
+            }
+            // new OutputStreamWriter(System.out) can be used for debugging
+            CSV2JSONConverter.convert("https://raw.githubusercontent.com/elastic/elasticsearch-php-examples/main/examples/ESQL/data/books.csv", output, Book.class, "books");
+        }
+    }
+
 
     @BeforeEach
     void setupClient() {
@@ -64,82 +85,38 @@ public class BookSearcherIntTest {
         LocalTime started = LocalTime.now();
         System.out.println("Starting up with data initialization " + started);
         // first we need to create the index and give it a precise mapping, just like for production
-        client.indices()
-            .create(c -> c
-                .index("books")
-                .mappings(mp -> mp
-                    .properties("title", p -> p.text(t -> t))
-                    .properties("description", p -> p.text(t -> t))
-                    .properties("author", p -> p.text(t -> t))
-                    .properties("year", p -> p.short_(s -> s))
-                    .properties("publisher", p -> p.text(t -> t))
-                    .properties("ratings", p -> p.halfFloat(hf -> hf))
-                ));
-
-        // this record class will help up with deserialization of the CSV data we use to initialize Elasticsearch
-        @com.fasterxml.jackson.annotation.JsonPropertyOrder({"title", "description", "author", "year", "publisher", "ratings"})
-        record Book(
-            String title,
-            String description,
-            String author,
-            int year,
-            String publisher,
-            float ratings
-        ) {
-        }
-
-        // this is to tell what's the structure of our CSV data
-        CsvMapper csvMapper = new CsvMapper();
-        CsvSchema schema = csvMapper
-            .typedSchemaFor(Book.class)
-            .withHeader()
-            .withColumnSeparator(';')
-            .withSkipFirstDataRow(true);
-
-        // this is where we fetch the data from
-        String booksUrl = "https://raw.githubusercontent.com/elastic/elasticsearch-php-examples/main/examples/ESQL/data/books.csv";
-
-
-        try (HttpClient httpClient = HttpClient.newHttpClient()) {
-            HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(booksUrl))
-                .build();
-
-            HttpResponse<InputStream> response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
-
-            // instead of fetching the whole file locally first, we're going to stream it
-            InputStream csvContentStream = response.body();
-
-            // from now on we stream the data and add it
-            MappingIterator<Book> it = csvMapper
-                .readerFor(Book.class)
-                .with(schema)
-                .readValues(new InputStreamReader(csvContentStream));
-
-            try (BulkIngester<?> ingester = BulkIngester.of(bi -> bi
-                .client(client)
-                .maxConcurrentRequests(20)
-                .maxOperations(5000))) {
-
-                boolean hasNext = true;
-
-                while (hasNext) {
-                    try {
-                        Book book = it.nextValue();
-                        ingester.add(BulkOperation.of(b -> b
-                            .index(i -> i
-                                .index("books")
-                                .document(book))));
-                        hasNext = it.hasNextValue();
-                    } catch (JsonParseException | InvalidFormatException e) {
-                        // ignore malformed data
+        ExecResult result = elasticsearch.execInContainer(
+            "curl", "https://localhost:9200/books", "-u", "elastic:changeme",
+            "--cacert", "/usr/share/elasticsearch/config/certs/http_ca.crt",
+            "-X", "PUT",
+            "-H", "Content-Type: application/json",
+            "-d", """
+                {
+                  "mappings": {
+                    "properties": {
+                      "title": { "type": "text" },
+                      "description": { "type": "text" },
+                      "author": { "type": "text" },
+                      "year": { "type": "short" },
+                      "publisher": { "type": "text" },
+                      "ratings": { "type": "half_float" }
                     }
+                  }
                 }
-            }
-        }
-        // please don't go with Thread.sleep(1_000) "for the data to appear"; instead: refresh
-        // more: https://www.elastic.co/guide/en/elasticsearch/reference/current/indices-refresh.html
-        client.indices().refresh();
+                """
+        );
+        assert result.getExitCode() == 0;
+
+        // now we need to run bulk import of the data we copied to the container
+        result = elasticsearch.execInContainer(
+            "curl", "https://localhost:9200/_bulk?refresh=true", "-u", "elastic:changeme",
+            "--cacert", "/usr/share/elasticsearch/config/certs/http_ca.crt",
+            "-X", "POST",
+            "-H", "Content-Type: application/x-ndjson",
+            "--data-binary", "@/tmp/books.ndjson"
+        );
+        assert result.getExitCode() == 0;
+
         LocalTime finished = LocalTime.now();
         System.out.println("Finished data initialization " + finished + ", so it took " + Duration.between(started, finished).getSeconds() + " seconds.");
     }
