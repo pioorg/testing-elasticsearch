@@ -11,8 +11,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import static org.testcontainers.containers.Container.ExecResult;
 import org.testcontainers.elasticsearch.ElasticsearchContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.lifecycle.Startables;
 import org.testcontainers.utility.MountableFile;
 
 import java.io.FileWriter;
@@ -23,7 +22,6 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.time.LocalTime;
 
-@Testcontainers
 public class BookSearcherIntTest {
 
     static final String ELASTICSEARCH_IMAGE = "docker.elastic.co/elasticsearch/elasticsearch:8.15.0";
@@ -33,32 +31,30 @@ public class BookSearcherIntTest {
     RestClientTransport transport;
     ElasticsearchClient client;
 
-    @Container
-    ElasticsearchContainer elasticsearch =
+    static ElasticsearchContainer elasticsearch =
         new ElasticsearchContainer(ELASTICSEARCH_IMAGE)
             .withCopyToContainer(MountableFile.forHostPath("src/test/resources/books.ndjson"), "/tmp/books.ndjson");
 
     @BeforeAll
     static void setupDataIfMissing() throws IOException, InterruptedException {
-
-        if (Files.exists(DATA_PATH)) {
-            return;
-        }
-        try (Writer output = new FileWriter(DATA_PATH.toFile())) {
-            // this record class will help up with deserialization of the CSV data we use to initialize Elasticsearch
-            @com.fasterxml.jackson.annotation.JsonPropertyOrder({"title", "description", "author", "year", "publisher", "ratings"})
-            record Book(
-                String title,
-                String description,
-                String author,
-                int year,
-                String publisher,
-                float ratings
-            ) {
+        if (!Files.exists(DATA_PATH)) {
+            try (Writer output = new FileWriter(DATA_PATH.toFile())) {
+                // this record class will help up with deserialization of the CSV data we use to initialize Elasticsearch
+                @com.fasterxml.jackson.annotation.JsonPropertyOrder({"title", "description", "author", "year", "publisher", "ratings"})
+                record Book(
+                    String title,
+                    String description,
+                    String author,
+                    int year,
+                    String publisher,
+                    float ratings
+                ) {
+                }
+                // new OutputStreamWriter(System.out) can be used for debugging
+                CSV2JSONConverter.convert("https://raw.githubusercontent.com/elastic/elasticsearch-php-examples/main/examples/ESQL/data/books.csv", output, Book.class, "books");
             }
-            // new OutputStreamWriter(System.out) can be used for debugging
-            CSV2JSONConverter.convert("https://raw.githubusercontent.com/elastic/elasticsearch-php-examples/main/examples/ESQL/data/books.csv", output, Book.class, "books");
         }
+        Startables.deepStart(elasticsearch).join();
     }
 
 
@@ -84,8 +80,16 @@ public class BookSearcherIntTest {
 
         LocalTime started = LocalTime.now();
         System.out.println("Starting up with data initialization " + started);
-        // first we need to create the index and give it a precise mapping, just like for production
+        // first we need to delete an index, in case it still exists
         ExecResult result = elasticsearch.execInContainer(
+            "curl", "https://localhost:9200/books", "-u", "elastic:changeme",
+            "--cacert", "/usr/share/elasticsearch/config/certs/http_ca.crt",
+            "-X", "DELETE"
+        );
+        // we don't check the result, because the index might not have existed
+
+        // now we create the index and give it a precise mapping, just like for production
+        result = elasticsearch.execInContainer(
             "curl", "https://localhost:9200/books", "-u", "elastic:changeme",
             "--cacert", "/usr/share/elasticsearch/config/certs/http_ca.crt",
             "-X", "PUT",
