@@ -36,7 +36,10 @@ public class CommonTestBase {
         new ElasticsearchContainer(ELASTICSEARCH_IMAGE)
             .withCopyToContainer(MountableFile.forHostPath("src/test/resources/books.ndjson"), "/tmp/books.ndjson")
             .withEnv("path.repo", REPO_LOCATION)
-            .withTmpFs(Map.of("/usr/share/elasticsearch/data", "rw"));
+            .withTmpFs(Map.of("/usr/share/elasticsearch/data", "rw"))
+            // don't forget to opt-in in desired environments in ~/.testcontainers.properties
+            // as per https://java.testcontainers.org/features/reuse/
+            .withReuse(true);;
 
     @BeforeAll
     static void setupDataIfMissing() throws IOException, InterruptedException {
