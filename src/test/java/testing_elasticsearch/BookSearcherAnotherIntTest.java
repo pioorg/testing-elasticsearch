@@ -3,7 +3,7 @@ package testing_elasticsearch;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-public class BookSearcherIntTest extends CommonTestBase {
+public class BookSearcherAnotherIntTest extends CommonTestBase {
 
     @Test
     void canCreateClientWithContainerRunning_8_15() {
