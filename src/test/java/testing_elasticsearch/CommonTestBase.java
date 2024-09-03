@@ -39,7 +39,8 @@ public class CommonTestBase {
             .withTmpFs(Map.of("/usr/share/elasticsearch/data", "rw"))
             // don't forget to opt-in in desired environments in ~/.testcontainers.properties
             // as per https://java.testcontainers.org/features/reuse/
-            .withReuse(true);;
+            .withReuse(true)
+            .withLabel("fork", System.getenv().getOrDefault("fork", "fork_1"));
 
     @BeforeAll
     static void setupDataIfMissing() throws IOException, InterruptedException {
@@ -61,6 +62,8 @@ public class CommonTestBase {
             }
         }
         Startables.deepStart(elasticsearch).join();
+        // this is only for better comprehension of the containers
+        System.out.println("Using container " + elasticsearch.getContainerName() + " in fork " + System.getenv().getOrDefault("fork", "fork_1"));
 
         if (!snapshotExists()) {
             setupDataInContainer();
